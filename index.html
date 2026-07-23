@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Math Bingo (นักเรียน)</title>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;600;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+  <style>
+    body { font-family: 'Kanit', sans-serif; background: linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%); text-align: center; margin: 0; padding: 20px;}
+    .box { background: rgba(255, 255, 255, 0.95); padding: 30px; border-radius: 20px; max-width: 1400px; margin: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 95%;}
+    .btn { background: #4361ee; color: white; padding: 10px 20px; border: none; border-radius: 50px; font-size: 1.2rem; cursor: pointer; margin: 5px; font-family: 'Kanit';}
+    .btn:hover { background: #3f37c9; }
+
+    .question-box { background: #2b2d42; color: white; font-size: 2.5rem; padding: 10px 30px; border-radius: 15px; margin: 20px auto; display: inline-block; box-shadow: 0 8px 20px rgba(0,0,0,0.2); font-weight: 800; letter-spacing: 2px;}
+
+    .boards-container { display: flex; flex-direction: row; justify-content: center; gap: 15px; margin-top: 15px; width: 100%; flex-wrap: wrap;}
+    .bingo-board { background: white; padding: 15px; border-radius: 15px; border: 4px solid #4361ee; flex: 1 1 0; max-width: 420px; min-width: 260px;}
+    .board-title { font-size: 1.5rem; font-weight: 800; color: #4361ee; margin-bottom: 10px; letter-spacing: 5px;}
+    .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+
+    .cell { width: 100%; aspect-ratio: 1/1; display: flex; justify-content: center; align-items: center; background: #f1f3f5; border-radius: 10px; font-size: clamp(1rem, 1.5vw, 1.5rem); font-weight: 600; cursor: pointer; border: 2px solid #dee2e6; box-sizing: border-box;}
+    .cell.stamped { background: #4cc9f0; color: white; border-color: #4cc9f0; box-shadow: inset 0 0 10px rgba(0,0,0,0.2); }
+    .cell.free { background: #fca311; color: white; font-size: clamp(0.8rem, 1vw, 1.2rem); border-color: #fca311; }
+
+    .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+    .status-online { background:#2a9d8f; }
+    .status-offline { background:#e63946; }
+  </style>
+</head>
+<body>
+
+  <h1 style="color: #3f37c9;">🎮 Math Bingo</h1>
+  <p style="font-size:0.85rem; color:#555;"><span id="conn-dot" class="status-dot status-offline"></span><span id="conn-text">กำลังเชื่อมต่อ...</span></p>
+
+  <div class="box" id="setup-screen">
+    <h2>กำลังรอคุณครูตั้งค่าห้อง...</h2>
+    <p>รอสักครู่ ระบบกำลังเชื่อมต่ออัตโนมัติ ⏳</p>
+  </div>
+
+  <div class="box" id="game-screen" style="display: none;">
+    <h2 style="margin: 0; font-size: 1.2rem; color: #555;">หาคำตอบของสมการนี้!</h2>
+    <div class="question-box" id="question-display">รอคุณครูสุ่มโจทย์...</div>
+    <div class="boards-container" id="boards-container"></div>
+  </div>
+
+  <script>
+    // ▼▼▼ ใส่ Firebase Config ของคุณตรงนี้ (ต้องเป็นชุดเดียวกับใน admin.html) ▼▼▼
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "YOUR_PROJECT",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    // ▲▲▲ ---------------------------------------------------------- ▲▲▲
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const roomRef = db.ref('roomStatus');
+
+    const soundCorrect = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
+    const soundBingo = new Audio('https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3');
+    const soundWrong = new Audio('https://assets.mixkit.co/active_storage/sfx/2997/2997-preview.mp3');
+
+    let boardsState = [];
+    let currentAnswerFromServer = 0;
+    let currentEquationText = "";
+    let isPlaying = false;
+
+    // แสดงสถานะการเชื่อมต่อ
+    db.ref('.info/connected').on('value', (snap) => {
+      const dot = document.getElementById('conn-dot');
+      const text = document.getElementById('conn-text');
+      if (snap.val() === true) {
+        dot.className = 'status-dot status-online';
+        text.innerText = 'เชื่อมต่อสำเร็จ';
+      } else {
+        dot.className = 'status-dot status-offline';
+        text.innerText = 'กำลังเชื่อมต่อ...';
+      }
+    });
+
+    // ฟังข้อมูลห้องแบบ Real-time (แทน setInterval + google.script.run เดิม)
+    roomRef.on('value', (snapshot) => {
+      const data = snapshot.val();
+      updateUI(data);
+    });
+
+    function updateUI(data) {
+      if (!data) return;
+
+      // กรณีที่ 1: ครูเปิดให้เข้าห้องได้แล้ว แต่นักเรียนยังไม่ได้สร้างการ์ด
+      if (data.state === 'waiting' && !isPlaying) {
+        showCardSelection(data.maxCards);
+      }
+
+      // กรณีที่ 2: ครูกดสุ่มโจทย์ (อัปเดตหน้าจอ)
+      if (data.state === 'playing' && isPlaying) {
+        if (currentEquationText !== data.currentEquation) {
+          document.getElementById('question-display').innerText = data.currentEquation;
+          currentAnswerFromServer = data.currentAnswer;
+          currentEquationText = data.currentEquation;
+        }
+      }
+
+      // กรณีที่ 3: ครูรีเซ็ตเกม
+      if (data.state === 'closed' && isPlaying) {
+        location.reload();
+      }
+    }
+
+    function showCardSelection(maxCards) {
+      let html = `<h2>เลือกจำนวนการ์ด (ครูกำหนดให้เล่นได้สูงสุด ${maxCards} ใบ)</h2>`;
+      for (let i = 1; i <= maxCards; i++) {
+        html += `<button class="btn" onclick="generateBoards(${i})">${i} ใบ</button>`;
+      }
+      document.getElementById('setup-screen').innerHTML = html;
+    }
+
+    function generateBoards(numCards) {
+      isPlaying = true;
+      document.getElementById('setup-screen').style.display = 'none';
+      document.getElementById('game-screen').style.display = 'block';
+
+      const container = document.getElementById('boards-container');
+      container.innerHTML = '';
+      boardsState = [];
+
+      for (let b = 0; b < numCards; b++) {
+        let numbers = generateUniqueNumbers(1, 50, 24);
+        let state = [];
+        let html = `<div class="bingo-board"><div class="board-title">B I N G O</div><div class="grid">`;
+
+        let numIndex = 0;
+        for (let i = 0; i < 25; i++) {
+          if (i === 12) {
+            state.push(true);
+            html += `<div class="cell free stamped">FREE</div>`;
+          } else {
+            let num = numbers[numIndex];
+            state.push(false);
+            html += `<div class="cell" id="cell-${b}-${i}" onclick="checkCell(${b}, ${i}, ${num})">${num}</div>`;
+            numIndex++;
+          }
+        }
+        html += `</div></div>`;
+        container.innerHTML += html;
+        boardsState.push(state);
+      }
+    }
+
+    function generateUniqueNumbers(min, max, count) {
+      let nums = new Set();
+      while (nums.size < count) nums.add(Math.floor(Math.random() * (max - min + 1)) + min);
+      return Array.from(nums);
+    }
+
+    function checkCell(bIndex, cIndex, number) {
+      if (boardsState[bIndex][cIndex]) return;
+
+      if (number === currentAnswerFromServer) {
+        soundCorrect.currentTime = 0; soundCorrect.play();
+        boardsState[bIndex][cIndex] = true;
+        document.getElementById(`cell-${bIndex}-${cIndex}`).classList.add('stamped');
+
+        if (checkBingo(bIndex)) {
+          soundBingo.currentTime = 0; soundBingo.play();
+          Swal.fire({
+            title: '🎉 BINGO! 🎉',
+            text: 'ยินดีด้วย! แคปหน้าจอนี้ส่งให้คุณครูเลย!',
+            icon: 'success',
+            backdrop: `rgba(0,0,123,0.4) url("https://media.giphy.com/media/xT0xezQGU5xCDJuCPe/giphy.gif") left top no-repeat`
+          });
+        }
+      } else {
+        soundWrong.currentTime = 0; soundWrong.play();
+        Swal.fire('ผิดพลาด!', 'เลขนี้ไม่ใช่คำตอบของสมการนะ', 'error');
+      }
+    }
+
+    function checkBingo(bIndex) {
+      const state = boardsState[bIndex];
+      const wins = [
+        [0,1,2,3,4], [5,6,7,8,9], [10,11,12,13,14], [15,16,17,18,19], [20,21,22,23,24],
+        [0,5,10,15,20], [1,6,11,16,21], [2,7,12,17,22], [3,8,13,18,23], [4,9,14,19,24],
+        [0,6,12,18,24], [4,8,12,16,20]
+      ];
+      return wins.some(pattern => pattern.every(index => state[index] === true));
+    }
+  </script>
+</body>
+</html>
