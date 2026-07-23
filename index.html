@@ -7,10 +7,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;600;800&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
-
   <style>
     body { font-family: 'Kanit', sans-serif; background: linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%); text-align: center; margin: 0; padding: 20px;}
     .box { background: rgba(255, 255, 255, 0.95); padding: 30px; border-radius: 20px; max-width: 1400px; margin: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 95%;}
@@ -55,22 +51,9 @@
   </div>
 
   <script>
-    // ▼▼▼ ใส่ Firebase Config ของคุณตรงนี้ (ต้องเป็นชุดเดียวกับใน admin.html) ▼▼▼
-    const firebaseConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "YOUR_PROJECT.firebaseapp.com",
-      databaseURL: "https://YOUR_PROJECT-default-rtdb.asia-southeast1.firebasedatabase.app",
-      projectId: "YOUR_PROJECT",
-      storageBucket: "YOUR_PROJECT.appspot.com",
-      messagingSenderId: "YOUR_SENDER_ID",
-      appId: "YOUR_APP_ID"
-    };
-    // ▲▲▲ ---------------------------------------------------------- ▲▲▲
-
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
-    const roomRef = db.ref('roomStatus');
-    const playersRef = db.ref('players');
+    // ▼▼▼ ใส่ URL ของ Google Apps Script Web App ที่ deploy แล้ว (ลงท้ายด้วย /exec) ▼▼▼
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+    // ▲▲▲ ต้องเป็น URL เดียวกับที่ใส่ใน admin.html ▲▲▲
 
     const soundCorrect = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
     const soundBingo = new Audio('https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3');
@@ -79,13 +62,12 @@
     let boardsState = [];
     let currentAnswerFromServer = 0;
     let currentEquationText = "";
-    let isPlaying = false;   // นักเรียนเลือกจำนวนการ์ดแล้วหรือยัง
-    let hasJoined = false;   // นักเรียนกดพร้อมเล่น + สุ่มชื่อแล้วหรือยัง
-    let myPlayerKey = null;
+    let isPlaying = false;
+    let hasJoined = false;
+    let joinInFlight = false;
     let myPlayerName = null;
-    let uiPhase = null;      // กันการวาดหน้าจอซ้ำ: 'closed' | 'lobby-join' | 'lobby-waiting' | 'cardselect'
+    let uiPhase = null;
 
-    // ---------- สุ่มชื่อเล่นนักเรียน ----------
     const ADJ = ['ขยัน','ใจดี','ซุกซน','เก่ง','อารมณ์ดี','ตลก','มุ่งมั่น','ไม่ยอมแพ้','สายฟ้า','สุดเท่','ยิ้มเก่ง','ไอเดียเยอะ'];
     const ANIMAL = ['เสือ','สิงโต','หมี','กระต่าย','เต่า','นกอินทรี','ปลาวาฬ','จิ้งจอก','ลิง','มังกร','แมวส้ม','หมาป่า'];
     function randomNickname() {
@@ -95,23 +77,33 @@
       return `${n}${a}${num}`;
     }
 
-    // แสดงสถานะการเชื่อมต่อ
-    db.ref('.info/connected').on('value', (snap) => {
+    // ---------- ตัวช่วยเรียก Apps Script API ----------
+    function apiGet(action) {
+      return fetch(`${APPS_SCRIPT_URL}?action=${action}`).then(r => r.json());
+    }
+    // ใช้ body เป็น string ธรรมดา (ไม่ตั้ง header Content-Type เอง) เพื่อเลี่ยง CORS preflight
+    function apiPost(payload) {
+      return fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }).then(r => r.json());
+    }
+
+    function setConnDot(ok) {
       const dot = document.getElementById('conn-dot');
       const text = document.getElementById('conn-text');
-      if (snap.val() === true) {
-        dot.className = 'status-dot status-online';
-        text.innerText = 'เชื่อมต่อสำเร็จ';
-      } else {
-        dot.className = 'status-dot status-offline';
-        text.innerText = 'กำลังเชื่อมต่อ...';
-      }
-    });
+      dot.className = 'status-dot ' + (ok ? 'status-online' : 'status-offline');
+      text.innerText = ok ? 'เชื่อมต่อสำเร็จ' : 'กำลังเชื่อมต่อ...';
+    }
 
-    // ฟังข้อมูลห้องแบบ Real-time
-    roomRef.on('value', (snapshot) => {
-      updateUI(snapshot.val());
-    });
+    // โพลสถานะห้องทุก 2 วิ
+    function poll() {
+      apiGet('getRoomState')
+        .then(data => { setConnDot(true); updateUI(data); })
+        .catch(() => setConnDot(false));
+    }
+    setInterval(poll, 2000);
+    poll();
 
     function updateUI(data) {
       if (!data || data.state === 'closed') {
@@ -124,7 +116,6 @@
         return;
       }
 
-      // ห้องรอ (lobby): ครูเปิดห้องแล้ว รอผู้เล่นกดพร้อม
       if (data.state === 'lobby') {
         if (!hasJoined && uiPhase !== 'lobby-join') {
           uiPhase = 'lobby-join';
@@ -136,7 +127,6 @@
         return;
       }
 
-      // ครูกด "เริ่มเกม" แล้ว: ให้นักเรียนที่ join ไปเลือกจำนวนการ์ด
       if (data.state === 'waiting') {
         if (hasJoined && !isPlaying && uiPhase !== 'cardselect') {
           uiPhase = 'cardselect';
@@ -145,7 +135,6 @@
         return;
       }
 
-      // ครูกดสุ่มโจทย์: อัปเดตคำถาม
       if (data.state === 'playing' && isPlaying) {
         if (currentEquationText !== data.currentEquation) {
           document.getElementById('question-display').innerText = data.currentEquation;
@@ -159,20 +148,29 @@
       document.getElementById('setup-screen').innerHTML = `
         <h2>ห้องเปิดแล้ว! 🚪</h2>
         <p>กดปุ่มด้านล่างเพื่อเข้าห้องรอของคุณครู</p>
-        <button class="btn btn-big" onclick="joinLobby()">✅ พร้อมเล่น!</button>
+        <button class="btn btn-big" id="join-btn" onclick="joinLobby()">✅ พร้อมเล่น!</button>
       `;
     }
 
     function joinLobby() {
+      if (joinInFlight) return;
+      joinInFlight = true;
+      const btn = document.getElementById('join-btn');
+      if (btn) { btn.disabled = true; btn.innerText = 'กำลังเข้าห้อง...'; }
+
       myPlayerName = randomNickname();
-      const newRef = playersRef.push();
-      myPlayerKey = newRef.key;
-      newRef.set({ name: myPlayerName, joinedAt: Date.now() });
-      // ถ้าหลุดการเชื่อมต่อ/ปิดหน้าเว็บ ให้ลบชื่อออกจากห้องรอเอง
-      newRef.onDisconnect().remove();
-      hasJoined = true;
-      uiPhase = 'lobby-waiting';
-      showWaitingForStart();
+      apiPost({ action: 'joinLobby', name: myPlayerName })
+        .then(() => {
+          joinInFlight = false;
+          hasJoined = true;
+          uiPhase = 'lobby-waiting';
+          showWaitingForStart();
+        })
+        .catch(() => {
+          joinInFlight = false;
+          if (btn) { btn.disabled = false; btn.innerText = '✅ พร้อมเล่น!'; }
+          Swal.fire('ผิดพลาด', 'เข้าห้องไม่สำเร็จ ลองกดใหม่อีกครั้ง', 'error');
+        });
     }
 
     function showWaitingForStart() {
