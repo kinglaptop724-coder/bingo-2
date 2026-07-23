@@ -16,6 +16,7 @@
     .box { background: rgba(255, 255, 255, 0.95); padding: 30px; border-radius: 20px; max-width: 1400px; margin: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 95%;}
     .btn { background: #4361ee; color: white; padding: 10px 20px; border: none; border-radius: 50px; font-size: 1.2rem; cursor: pointer; margin: 5px; font-family: 'Kanit';}
     .btn:hover { background: #3f37c9; }
+    .btn-big { font-size: 1.6rem; padding: 18px 45px; }
 
     .question-box { background: #2b2d42; color: white; font-size: 2.5rem; padding: 10px 30px; border-radius: 15px; margin: 20px auto; display: inline-block; box-shadow: 0 8px 20px rgba(0,0,0,0.2); font-weight: 800; letter-spacing: 2px;}
 
@@ -31,6 +32,10 @@
     .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
     .status-online { background:#2a9d8f; }
     .status-offline { background:#e63946; }
+
+    .my-name-badge { display:inline-block; background:#fca311; color:white; font-weight:600; padding:8px 20px; border-radius:50px; font-size:1.2rem; margin-top:10px; }
+    .spinner { width:36px; height:36px; border:5px solid #e0c3fc; border-top:5px solid #4361ee; border-radius:50%; margin:20px auto; animation: spin 1s linear infinite; }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -65,6 +70,7 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
     const roomRef = db.ref('roomStatus');
+    const playersRef = db.ref('players');
 
     const soundCorrect = new Audio('https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3');
     const soundBingo = new Audio('https://assets.mixkit.co/active_storage/sfx/2013/2013-preview.mp3');
@@ -73,7 +79,21 @@
     let boardsState = [];
     let currentAnswerFromServer = 0;
     let currentEquationText = "";
-    let isPlaying = false;
+    let isPlaying = false;   // นักเรียนเลือกจำนวนการ์ดแล้วหรือยัง
+    let hasJoined = false;   // นักเรียนกดพร้อมเล่น + สุ่มชื่อแล้วหรือยัง
+    let myPlayerKey = null;
+    let myPlayerName = null;
+    let uiPhase = null;      // กันการวาดหน้าจอซ้ำ: 'closed' | 'lobby-join' | 'lobby-waiting' | 'cardselect'
+
+    // ---------- สุ่มชื่อเล่นนักเรียน ----------
+    const ADJ = ['ขยัน','ใจดี','ซุกซน','เก่ง','อารมณ์ดี','ตลก','มุ่งมั่น','ไม่ยอมแพ้','สายฟ้า','สุดเท่','ยิ้มเก่ง','ไอเดียเยอะ'];
+    const ANIMAL = ['เสือ','สิงโต','หมี','กระต่าย','เต่า','นกอินทรี','ปลาวาฬ','จิ้งจอก','ลิง','มังกร','แมวส้ม','หมาป่า'];
+    function randomNickname() {
+      const a = ADJ[Math.floor(Math.random() * ADJ.length)];
+      const n = ANIMAL[Math.floor(Math.random() * ANIMAL.length)];
+      const num = Math.floor(Math.random() * 90) + 10;
+      return `${n}${a}${num}`;
+    }
 
     // แสดงสถานะการเชื่อมต่อ
     db.ref('.info/connected').on('value', (snap) => {
@@ -88,21 +108,44 @@
       }
     });
 
-    // ฟังข้อมูลห้องแบบ Real-time (แทน setInterval + google.script.run เดิม)
+    // ฟังข้อมูลห้องแบบ Real-time
     roomRef.on('value', (snapshot) => {
-      const data = snapshot.val();
-      updateUI(data);
+      updateUI(snapshot.val());
     });
 
     function updateUI(data) {
-      if (!data) return;
-
-      // กรณีที่ 1: ครูเปิดให้เข้าห้องได้แล้ว แต่นักเรียนยังไม่ได้สร้างการ์ด
-      if (data.state === 'waiting' && !isPlaying) {
-        showCardSelection(data.maxCards);
+      if (!data || data.state === 'closed') {
+        if (hasJoined || isPlaying) { location.reload(); return; }
+        if (uiPhase !== 'closed') {
+          uiPhase = 'closed';
+          document.getElementById('setup-screen').innerHTML =
+            `<h2>กำลังรอคุณครูตั้งค่าห้อง...</h2><p>รอสักครู่ ระบบกำลังเชื่อมต่ออัตโนมัติ ⏳</p>`;
+        }
+        return;
       }
 
-      // กรณีที่ 2: ครูกดสุ่มโจทย์ (อัปเดตหน้าจอ)
+      // ห้องรอ (lobby): ครูเปิดห้องแล้ว รอผู้เล่นกดพร้อม
+      if (data.state === 'lobby') {
+        if (!hasJoined && uiPhase !== 'lobby-join') {
+          uiPhase = 'lobby-join';
+          showJoinScreen();
+        } else if (hasJoined && uiPhase !== 'lobby-waiting') {
+          uiPhase = 'lobby-waiting';
+          showWaitingForStart();
+        }
+        return;
+      }
+
+      // ครูกด "เริ่มเกม" แล้ว: ให้นักเรียนที่ join ไปเลือกจำนวนการ์ด
+      if (data.state === 'waiting') {
+        if (hasJoined && !isPlaying && uiPhase !== 'cardselect') {
+          uiPhase = 'cardselect';
+          showCardSelection(data.maxCards);
+        }
+        return;
+      }
+
+      // ครูกดสุ่มโจทย์: อัปเดตคำถาม
       if (data.state === 'playing' && isPlaying) {
         if (currentEquationText !== data.currentEquation) {
           document.getElementById('question-display').innerText = data.currentEquation;
@@ -110,11 +153,35 @@
           currentEquationText = data.currentEquation;
         }
       }
+    }
 
-      // กรณีที่ 3: ครูรีเซ็ตเกม
-      if (data.state === 'closed' && isPlaying) {
-        location.reload();
-      }
+    function showJoinScreen() {
+      document.getElementById('setup-screen').innerHTML = `
+        <h2>ห้องเปิดแล้ว! 🚪</h2>
+        <p>กดปุ่มด้านล่างเพื่อเข้าห้องรอของคุณครู</p>
+        <button class="btn btn-big" onclick="joinLobby()">✅ พร้อมเล่น!</button>
+      `;
+    }
+
+    function joinLobby() {
+      myPlayerName = randomNickname();
+      const newRef = playersRef.push();
+      myPlayerKey = newRef.key;
+      newRef.set({ name: myPlayerName, joinedAt: Date.now() });
+      // ถ้าหลุดการเชื่อมต่อ/ปิดหน้าเว็บ ให้ลบชื่อออกจากห้องรอเอง
+      newRef.onDisconnect().remove();
+      hasJoined = true;
+      uiPhase = 'lobby-waiting';
+      showWaitingForStart();
+    }
+
+    function showWaitingForStart() {
+      document.getElementById('setup-screen').innerHTML = `
+        <h2>เข้าห้องสำเร็จ! ✅</h2>
+        <div class="my-name-badge">ชื่อของคุณคือ: ${myPlayerName}</div>
+        <div class="spinner"></div>
+        <p>รอคุณครูกด "เริ่มเกม"...</p>
+      `;
     }
 
     function showCardSelection(maxCards) {
