@@ -12,16 +12,24 @@
 
   <style>
     body { font-family: 'Kanit', sans-serif; background: #fff3e0; padding: 20px; text-align: center; }
-    .container { background: white; padding: 30px; border-radius: 15px; max-width: 600px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    .container { background: white; padding: 30px; border-radius: 15px; max-width: 650px; margin: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
     button { background: #e63946; color: white; border: none; padding: 15px 30px; font-size: 1.2rem; font-family: 'Kanit'; border-radius: 10px; cursor: pointer; margin: 10px; }
     button:hover { background: #d90429; }
     .btn-green { background: #2a9d8f; }
     .btn-green:hover { background: #21867a; }
+    .btn-blue { background: #4361ee; }
+    .btn-blue:hover { background: #3f37c9; }
+    button:disabled { background: #ccc; color: #888; cursor: not-allowed; }
     input { padding: 10px; font-size: 1.2rem; width: 100px; text-align: center; }
     #current-q { font-size: 3rem; font-weight: bold; color: #1d3557; margin: 20px; }
     .status-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
     .status-online { background:#2a9d8f; }
     .status-offline { background:#e63946; }
+
+    .player-list { list-style: none; padding: 0; margin: 15px 0; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+    .player-chip { background: #edf2f4; color: #1d3557; padding: 8px 16px; border-radius: 50px; font-size: 1rem; font-weight: 600; }
+    .player-count { font-size: 1.1rem; color: #555; margin-top: 10px; }
+    .empty-note { color: #999; font-style: italic; }
   </style>
 </head>
 <body>
@@ -30,15 +38,28 @@
     <h1>👨‍🏫 ระบบควบคุมเกม (Admin)</h1>
     <p style="font-size:0.85rem; color:#555;"><span id="conn-dot" class="status-dot status-offline"></span><span id="conn-text">กำลังเชื่อมต่อ...</span></p>
 
+    <!-- ขั้นที่ 1: ตั้งค่าและเปิดห้องรอผู้เล่น -->
     <div id="setup-section">
       <h3>1. กำหนดจำนวนการ์ดที่เล่นได้ (1-3)</h3>
       <input type="number" id="maxCardsInput" value="3" min="1" max="3">
       <br>
-      <button onclick="startGame()">✅ เปิดให้นักเรียนเข้าเกม</button>
+      <button onclick="openLobby()">🚪 เปิดห้องรอผู้เล่น</button>
     </div>
 
+    <!-- ขั้นที่ 2: ห้องรอ - แสดงรายชื่อผู้เล่นแบบเรียลไทม์ -->
+    <div id="lobby-section" style="display: none;">
+      <h3 style="color:#e63946;">🕐 ห้องเปิดแล้ว รอผู้เล่นกด "พร้อมเล่น"</h3>
+      <div class="player-count"><span id="player-count-num">0</span> คนเข้าห้องแล้ว</div>
+      <ul class="player-list" id="player-list"></ul>
+      <br>
+      <button class="btn-green" onclick="beginGame()">▶️ เริ่มเกม (ให้นักเรียนเลือกการ์ด)</button>
+      <br><br><hr><br>
+      <button onclick="resetGame()" style="background: #ccc; color: black;">🔄 ยกเลิก / รีเซ็ต</button>
+    </div>
+
+    <!-- ขั้นที่ 3: เกมกำลังเล่น -->
     <div id="game-section" style="display: none;">
-      <h3 style="color: green;">🟢 เกมกำลังเล่นอยู่</h3>
+      <h3 style="color: green;">🟢 เกมกำลังเล่นอยู่ (<span id="game-player-count">0</span> คน)</h3>
       <div id="current-q">รอสุ่มโจทย์...</div>
       <button class="btn-green" onclick="nextQuestion()">🎲 สุ่มโจทย์ข้อต่อไป</button>
       <br><br><hr><br>
@@ -62,6 +83,7 @@
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
     const roomRef = db.ref('roomStatus');
+    const playersRef = db.ref('players');
 
     // แสดงสถานะการเชื่อมต่อ
     db.ref('.info/connected').on('value', (snap) => {
@@ -76,22 +98,48 @@
       }
     });
 
+    // ฟังรายชื่อผู้เล่นแบบเรียลไทม์ (ใช้ได้ทั้งตอน lobby และตอนเล่นเกม)
+    playersRef.on('value', (snapshot) => {
+      const players = snapshot.val() || {};
+      const names = Object.values(players).map(p => p.name);
+
+      document.getElementById('player-count-num').innerText = names.length;
+      document.getElementById('game-player-count').innerText = names.length;
+
+      const listEl = document.getElementById('player-list');
+      if (names.length === 0) {
+        listEl.innerHTML = `<li class="empty-note">ยังไม่มีใครเข้าห้อง...</li>`;
+      } else {
+        listEl.innerHTML = names.map(n => `<li class="player-chip">🙋 ${n}</li>`).join('');
+      }
+    });
+
     // รายการตัวเลข 1-50 ที่จะสุ่ม
     let availableAnswers = Array.from({length: 50}, (_, i) => i + 1);
 
-    function startGame() {
+    // ขั้นที่ 1: เปิดห้องรอผู้เล่น
+    function openLobby() {
       const maxCards = document.getElementById('maxCardsInput').value;
 
+      // ล้างรายชื่อผู้เล่นเก่า แล้วเปิดห้องใหม่
+      playersRef.remove();
       roomRef.set({
-        state: 'waiting',
+        state: 'lobby',
         maxCards: parseInt(maxCards),
-        currentEquation: 'รอคุณครูสุ่มโจทย์...',
+        currentEquation: '',
         currentAnswer: 0
       });
 
       document.getElementById('setup-section').style.display = 'none';
+      document.getElementById('lobby-section').style.display = 'block';
+    }
+
+    // ขั้นที่ 2: กด "เริ่มเกม" ให้นักเรียนที่เข้าห้องไปเลือกจำนวนการ์ด
+    function beginGame() {
+      roomRef.update({ state: 'waiting' });
+      document.getElementById('lobby-section').style.display = 'none';
       document.getElementById('game-section').style.display = 'block';
-      Swal.fire('สำเร็จ!', 'นักเรียนสามารถกดเข้าเกมได้แล้ว', 'success');
+      Swal.fire('เริ่มเกม!', 'นักเรียนสามารถเลือกจำนวนการ์ดได้แล้ว', 'success');
     }
 
     function nextQuestion() {
@@ -116,6 +164,7 @@
 
     function resetGame() {
       availableAnswers = Array.from({length: 50}, (_, i) => i + 1);
+      playersRef.remove();
       roomRef.set({
         state: 'closed', maxCards: 1, currentEquation: '', currentAnswer: 0
       });
