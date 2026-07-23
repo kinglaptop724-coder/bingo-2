@@ -6,9 +6,6 @@
   <title>Math Bingo - Admin ควบคุมเกม</title>
   <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-  <!-- Firebase SDK -->
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
   <style>
     body { font-family: 'Kanit', sans-serif; background: #fff3e0; padding: 20px; text-align: center; }
@@ -17,8 +14,6 @@
     button:hover { background: #d90429; }
     .btn-green { background: #2a9d8f; }
     .btn-green:hover { background: #21867a; }
-    .btn-blue { background: #4361ee; }
-    .btn-blue:hover { background: #3f37c9; }
     button:disabled { background: #ccc; color: #888; cursor: not-allowed; }
     input { padding: 10px; font-size: 1.2rem; width: 100px; text-align: center; }
     #current-q { font-size: 3rem; font-weight: bold; color: #1d3557; margin: 20px; }
@@ -46,7 +41,7 @@
       <button onclick="openLobby()">🚪 เปิดห้องรอผู้เล่น</button>
     </div>
 
-    <!-- ขั้นที่ 2: ห้องรอ - แสดงรายชื่อผู้เล่นแบบเรียลไทม์ -->
+    <!-- ขั้นที่ 2: ห้องรอ - แสดงรายชื่อผู้เล่น -->
     <div id="lobby-section" style="display: none;">
       <h3 style="color:#e63946;">🕐 ห้องเปิดแล้ว รอผู้เล่นกด "พร้อมเล่น"</h3>
       <div class="player-count"><span id="player-count-num">0</span> คนเข้าห้องแล้ว</div>
@@ -68,78 +63,80 @@
   </div>
 
   <script>
-    // ▼▼▼ ใส่ Firebase Config ของคุณตรงนี้ (ต้องเป็นชุดเดียวกับใน index.html) ▼▼▼
-    const firebaseConfig = {
-      apiKey: "YOUR_API_KEY",
-      authDomain: "YOUR_PROJECT.firebaseapp.com",
-      databaseURL: "https://YOUR_PROJECT-default-rtdb.asia-southeast1.firebasedatabase.app",
-      projectId: "YOUR_PROJECT",
-      storageBucket: "YOUR_PROJECT.appspot.com",
-      messagingSenderId: "YOUR_SENDER_ID",
-      appId: "YOUR_APP_ID"
-    };
-    // ▲▲▲ ---------------------------------------------------------- ▲▲▲
+    // ▼▼▼ ใส่ URL ของ Google Apps Script Web App ที่ deploy แล้ว (ลงท้ายด้วย /exec) ▼▼▼
+    const APPS_SCRIPT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+    // ▲▲▲ ต้องเป็น URL เดียวกับที่ใส่ใน index.html ▲▲▲
 
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
-    const roomRef = db.ref('roomStatus');
-    const playersRef = db.ref('players');
-
-    // แสดงสถานะการเชื่อมต่อ
-    db.ref('.info/connected').on('value', (snap) => {
-      const dot = document.getElementById('conn-dot');
-      const text = document.getElementById('conn-text');
-      if (snap.val() === true) {
-        dot.className = 'status-dot status-online';
-        text.innerText = 'เชื่อมต่อสำเร็จ';
-      } else {
-        dot.className = 'status-dot status-offline';
-        text.innerText = 'กำลังเชื่อมต่อ...';
-      }
-    });
-
-    // ฟังรายชื่อผู้เล่นแบบเรียลไทม์ (ใช้ได้ทั้งตอน lobby และตอนเล่นเกม)
-    playersRef.on('value', (snapshot) => {
-      const players = snapshot.val() || {};
-      const names = Object.values(players).map(p => p.name);
-
-      document.getElementById('player-count-num').innerText = names.length;
-      document.getElementById('game-player-count').innerText = names.length;
-
-      const listEl = document.getElementById('player-list');
-      if (names.length === 0) {
-        listEl.innerHTML = `<li class="empty-note">ยังไม่มีใครเข้าห้อง...</li>`;
-      } else {
-        listEl.innerHTML = names.map(n => `<li class="player-chip">🙋 ${n}</li>`).join('');
-      }
-    });
-
-    // รายการตัวเลข 1-50 ที่จะสุ่ม
     let availableAnswers = Array.from({length: 50}, (_, i) => i + 1);
+    let pollTimer = null;
 
-    // ขั้นที่ 1: เปิดห้องรอผู้เล่น
-    function openLobby() {
-      const maxCards = document.getElementById('maxCardsInput').value;
-
-      // ล้างรายชื่อผู้เล่นเก่า แล้วเปิดห้องใหม่
-      playersRef.remove();
-      roomRef.set({
-        state: 'lobby',
-        maxCards: parseInt(maxCards),
-        currentEquation: '',
-        currentAnswer: 0
-      });
-
-      document.getElementById('setup-section').style.display = 'none';
-      document.getElementById('lobby-section').style.display = 'block';
+    function apiGet(action) {
+      return fetch(`${APPS_SCRIPT_URL}?action=${action}`).then(r => r.json());
+    }
+    function apiPost(payload) {
+      return fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }).then(r => r.json());
     }
 
-    // ขั้นที่ 2: กด "เริ่มเกม" ให้นักเรียนที่เข้าห้องไปเลือกจำนวนการ์ด
+    function setConnDot(ok) {
+      const dot = document.getElementById('conn-dot');
+      const text = document.getElementById('conn-text');
+      dot.className = 'status-dot ' + (ok ? 'status-online' : 'status-offline');
+      text.innerText = ok ? 'เชื่อมต่อสำเร็จ' : 'กำลังเชื่อมต่อ...';
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => {
+        apiGet('getRoomState')
+          .then(data => { setConnDot(true); renderPlayers(data); })
+          .catch(() => setConnDot(false));
+      }, 2000);
+    }
+
+    function renderPlayers(data) {
+      if (!data) return;
+      const players = data.players || [];
+      document.getElementById('player-count-num').innerText = players.length;
+      document.getElementById('game-player-count').innerText = players.length;
+
+      const listEl = document.getElementById('player-list');
+      if (players.length === 0) {
+        listEl.innerHTML = `<li class="empty-note">ยังไม่มีใครเข้าห้อง...</li>`;
+      } else {
+        listEl.innerHTML = players.map(p => `<li class="player-chip">🙋 ${p.name}</li>`).join('');
+      }
+    }
+
+    // เช็คการเชื่อมต่อครั้งแรกตอนโหลดหน้า
+    apiGet('getRoomState').then(() => setConnDot(true)).catch(() => setConnDot(false));
+
+    function openLobby() {
+      const maxCards = document.getElementById('maxCardsInput').value;
+      apiPost({ action: 'startLobby', maxCards: maxCards })
+        .then(() => {
+          document.getElementById('setup-section').style.display = 'none';
+          document.getElementById('lobby-section').style.display = 'block';
+          renderPlayers({ players: [] });
+          startPolling();
+        })
+        .catch(() => {
+          Swal.fire('ผิดพลาด', 'เปิดห้องไม่สำเร็จ ลองใหม่อีกครั้ง', 'error');
+        });
+    }
+
     function beginGame() {
-      roomRef.update({ state: 'waiting' });
-      document.getElementById('lobby-section').style.display = 'none';
-      document.getElementById('game-section').style.display = 'block';
-      Swal.fire('เริ่มเกม!', 'นักเรียนสามารถเลือกจำนวนการ์ดได้แล้ว', 'success');
+      apiPost({ action: 'beginGame' })
+        .then(() => {
+          document.getElementById('lobby-section').style.display = 'none';
+          document.getElementById('game-section').style.display = 'block';
+          Swal.fire('เริ่มเกม!', 'นักเรียนสามารถเลือกจำนวนการ์ดได้แล้ว', 'success');
+        })
+        .catch(() => {
+          Swal.fire('ผิดพลาด', 'เริ่มเกมไม่สำเร็จ ลองใหม่อีกครั้ง', 'error');
+        });
     }
 
     function nextQuestion() {
@@ -154,21 +151,13 @@
 
       document.getElementById('current-q').innerText = equation;
 
-      // ส่งโจทย์ไปให้นักเรียนทุกคนเห็นพร้อมกันแบบ real-time
-      roomRef.update({
-        state: 'playing',
-        currentEquation: equation,
-        currentAnswer: answer
-      });
+      apiPost({ action: 'nextQuestion', equation: equation, answer: answer });
     }
 
     function resetGame() {
       availableAnswers = Array.from({length: 50}, (_, i) => i + 1);
-      playersRef.remove();
-      roomRef.set({
-        state: 'closed', maxCards: 1, currentEquation: '', currentAnswer: 0
-      });
-      location.reload();
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      apiPost({ action: 'resetGame' }).then(() => location.reload());
     }
 
     function createEquation(answer) {
